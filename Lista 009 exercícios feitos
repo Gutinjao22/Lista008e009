@@ -1,0 +1,379 @@
+1 Tabela FIPE:
+Classes de Modelo
+package com.fipe.model;
+
+public record ConsultaFipeRequest(
+    String marca,
+    String modelo,
+    int ano
+) {}
+
+package com.fipe.model;
+
+public record FipeResponse(
+    double valor,
+    String mes
+) {}
+
+package com.fipe.model;
+
+
+public record FipeApiData(
+    String Valor, // O nome da propriedade na API é "Valor" com 'V' maiúsculo
+    String MesReferencia
+) {}
+
+O Serviço
+package com.fipe.service;
+
+import com.fipe.model.ConsultaFipeRequest;
+import com.fipe.model.FipeApiData;
+import com.fipe.model.FipeResponse;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.server.ResponseStatusException;
+import org.springframework.http.HttpStatus;
+
+@Service
+public class FipeService {
+
+    private final RestClient restClient;
+    private static final String FIPE_API_BASE_URL = "https://parallelum.com.br/fipe/api/v1/carros/consultarvalorfipe";
+
+    public FipeService() {
+       
+        this.restClient = RestClient.create();
+    }
+
+    public FipeResponse buscarValorFipe(ConsultaFipeRequest request) {
+        
+       
+        String apiUrl = String.format("%s?marca=%s&modelo=%s&ano=%d",
+            FIPE_API_BASE_URL, 
+            request.marca(), 
+            request.modelo(), 
+            request.ano());
+
+        try {
+            
+            FipeApiData apiData = restClient.get()
+                .uri(apiUrl)
+                .retrieve()
+                .onStatus(HttpStatus.NOT_FOUND::equals, (req, res) -> {
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Carro não encontrado na Tabela FIPE.");
+                })
+                .body(FipeApiData.class);
+
+            
+            if (apiData == null) {
+                 throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Carro não encontrado na Tabela FIPE.");
+            }
+            
+            
+            double valorNumerico = limparEConverterValor(apiData.Valor());
+
+            return new FipeResponse(valorNumerico, apiData.MesReferencia());
+
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Erro ao buscar dados na API FIPE.", e);
+        }
+    }
+    
+    
+    private double limparEConverterValor(String valorString) {
+        
+        String valorLimpo = valorString.replace("R$", "").replace(" ", "").replace(".", "").replace(",", ".");
+        try {
+            return Double.parseDouble(valorLimpo);
+        } catch (NumberFormatException e) {
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Formato de valor inválido da API FIPE.");
+        }
+    }
+}
+
+
+O Controlador
+package com.fipe.controller;
+
+import com.fipe.model.ConsultaFipeRequest;
+import com.fipe.model.FipeResponse;
+import com.fipe.service.FipeService;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.HttpStatus;
+
+@RestController
+@RequestMapping("/fipe")
+public class FipeController {
+
+    private final FipeService fipeService;
+
+    // Injeção de dependência do FipeService
+    public FipeController(FipeService fipeService) {
+        this.fipeService = fipeService;
+    }
+
+    /**
+     * Recebe marca, modelo e ano no corpo e retorna o valor FIPE.
+     * * @param request Objeto JSON com marca, modelo e ano.
+     * @return Objeto JSON com o valor e mês de referência.
+     */
+    @PostMapping("/valor")
+    public FipeResponse consultarValor(
+        @RequestBody ConsultaFipeRequest request) {
+        
+        // Validação básica (opcional, mas recomendada)
+        if (request.marca() == null || request.modelo() == null || request.ano() <= 0) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "Dados de entrada inválidos. Marca, modelo e ano são obrigatórios.");
+        }
+
+        return fipeService.buscarValorFipe(request);
+    }
+}
+
+
+2 API com apikey: 
+
+package com.weatherapi.model;
+
+import java.util.List;
+
+// Mapeia a estrutura principal da resposta do OpenWeather
+public record OpenWeatherResponse(
+    String name,
+    List<WeatherInfo> weather,
+    MainInfo main
+) {
+    // Sub-record para a seção "weather" (descrição do clima)
+    public record WeatherInfo(
+        String description
+    ) {}
+
+    // Sub-record para a seção "main" (temperatura)
+    public record MainInfo(
+        double temp // Temperatura em Kelvin por padrão (será convertida)
+    ) {}
+}
+
+package com.weatherapi.model;
+
+public record MensagemClima(
+    String cidade,
+    String statusDoDia,
+    String mensagemContextual
+) {}
+
+package com.weatherapi.service;
+
+import com.weatherapi.model.MensagemClima;
+import com.weatherapi.model.OpenWeatherResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.server.ResponseStatusException;
+
+@Service
+public class WeatherService {
+
+    private final RestClient restClient;
+
+    // Injeta as propriedades do application.properties
+    @Value("${openweathermap.api.key}")
+    private String apiKey;
+
+    @Value("${openweathermap.base.url}")
+    private String baseUrl;
+
+    public WeatherService(RestClient.Builder restClientBuilder) {
+        // Usa o builder para configurar o RestClient
+        this.restClient = restClientBuilder.baseUrl(baseUrl).build();
+    }
+
+    public MensagemClima buscarEFormatarClima(String cidade) {
+        
+        // Parâmetros para a requisição
+        String uri = String.format("?q=%s&appid=%s&lang=pt_br", cidade, apiKey);
+
+        try {
+            // 1. Faz a requisição, incluindo a apiKey no URI
+            OpenWeatherResponse apiData = restClient.get()
+                .uri(uri)
+                .retrieve()
+                .onStatus(HttpStatus.NOT_FOUND::equals, (req, res) -> {
+                    // Trata o erro 404 (cidade não encontrada)
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Não foi possível encontrar a cidade: " + cidade);
+                })
+                .body(OpenWeatherResponse.class);
+
+            if (apiData == null) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Resposta da API vazia.");
+            }
+
+            // 2. Manipula e formata os dados
+            return formatarRespostaCriativa(apiData);
+
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            // Trata outros erros de conexão ou parsing
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Erro ao buscar dados da API OpenWeather.", e);
+        }
+    }
+
+    /**
+     * Lógica criativa de manipulação dos dados de resposta.
+     */
+    private MensagemClima formatarRespostaCriativa(OpenWeatherResponse data) {
+        
+        // Conversão de Kelvin para Celsius: C = K - 273.15
+        double tempCelsius = data.main().temp() - 273.15;
+        String tempFormatada = String.format("%.1f", tempCelsius);
+
+        String descricao = data.weather().get(0).description();
+        String status;
+        String mensagem;
+
+        if (tempCelsius > 30) {
+            status = "Dia Quente e Ensolarado";
+            mensagem = String.format("Atenção, o calor está intenso! Prepare a água e o protetor solar. São %sºC.", tempFormatada);
+        } else if (tempCelsius < 15) {
+            status = "Frio e Agradável";
+            mensagem = String.format("Clima de filme e pipoca! A temperatura está em %sºC, ideal para um agasalho.", tempFormatada);
+        } else {
+            status = "Clima Neutro";
+            mensagem = String.format("Um dia equilibrado com %sºC. O céu está '%s'.", tempFormatada, descricao);
+        }
+        
+        return new MensagemClima(
+            data.name(),
+            status,
+            mensagem
+        );
+    }
+}
+
+package com.weatherapi.service;
+
+import com.weatherapi.model.MensagemClima;
+import com.weatherapi.model.OpenWeatherResponse;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.web.client.RestClient;
+import org.springframework.web.server.ResponseStatusException;
+
+@Service
+public class WeatherService {
+
+    private final RestClient restClient;
+
+    // Injeta as propriedades do application.properties
+    @Value("${openweathermap.api.key}")
+    private String apiKey;
+
+    @Value("${openweathermap.base.url}")
+    private String baseUrl;
+
+    public WeatherService(RestClient.Builder restClientBuilder) {
+        // Usa o builder para configurar o RestClient
+        this.restClient = restClientBuilder.baseUrl(baseUrl).build();
+    }
+
+    public MensagemClima buscarEFormatarClima(String cidade) {
+        
+        // Parâmetros para a requisição
+        String uri = String.format("?q=%s&appid=%s&lang=pt_br", cidade, apiKey);
+
+        try {
+            // 1. Faz a requisição, incluindo a apiKey no URI
+            OpenWeatherResponse apiData = restClient.get()
+                .uri(uri)
+                .retrieve()
+                .onStatus(HttpStatus.NOT_FOUND::equals, (req, res) -> {
+                    // Trata o erro 404 (cidade não encontrada)
+                    throw new ResponseStatusException(HttpStatus.NOT_FOUND, "Não foi possível encontrar a cidade: " + cidade);
+                })
+                .body(OpenWeatherResponse.class);
+
+            if (apiData == null) {
+                throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Resposta da API vazia.");
+            }
+
+            // 2. Manipula e formata os dados
+            return formatarRespostaCriativa(apiData);
+
+        } catch (ResponseStatusException e) {
+            throw e;
+        } catch (Exception e) {
+            // Trata outros erros de conexão ou parsing
+            throw new ResponseStatusException(HttpStatus.INTERNAL_SERVER_ERROR, "Erro ao buscar dados da API OpenWeather.", e);
+        }
+    }
+
+    /**
+     * Lógica criativa de manipulação dos dados de resposta.
+     */
+    private MensagemClima formatarRespostaCriativa(OpenWeatherResponse data) {
+        
+        // Conversão de Kelvin para Celsius: C = K - 273.15
+        double tempCelsius = data.main().temp() - 273.15;
+        String tempFormatada = String.format("%.1f", tempCelsius);
+
+        String descricao = data.weather().get(0).description();
+        String status;
+        String mensagem;
+
+        if (tempCelsius > 30) {
+            status = "Dia Quente e Ensolarado";
+            mensagem = String.format("Atenção, o calor está intenso! Prepare a água e o protetor solar. São %sºC.", tempFormatada);
+        } else if (tempCelsius < 15) {
+            status = "Frio e Agradável";
+            mensagem = String.format("Clima de filme e pipoca! A temperatura está em %sºC, ideal para um agasalho.", tempFormatada);
+        } else {
+            status = "Clima Neutro";
+            mensagem = String.format("Um dia equilibrado com %sºC. O céu está '%s'.", tempFormatada, descricao);
+        }
+        
+        return new MensagemClima(
+            data.name(),
+            status,
+            mensagem
+        );
+    }
+}
+package com.weatherapi.controller;
+
+import com.weatherapi.model.MensagemClima;
+import com.weatherapi.service.WeatherService;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+@RestController
+@RequestMapping("/clima")
+public class WeatherController {
+
+    private final WeatherService weatherService;
+
+    public WeatherController(WeatherService weatherService) {
+        this.weatherService = weatherService;
+    }
+
+    /**
+     * Endpoint para consultar o clima de uma cidade e receber uma mensagem criativa.
+     * Ex: GET http://localhost:8080/clima?cidade=Sao%20Paulo
+     * * @param cidade Nome da cidade a ser consultada.
+     * @return Mensagem formatada e criativa sobre o clima.
+     */
+    @GetMapping
+    public MensagemClima consultarClima(@RequestParam(defaultValue = "Sao Paulo") String cidade) {
+        return weatherService.buscarEFormatarClima(cidade);
+    }
+}
